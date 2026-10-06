@@ -540,7 +540,7 @@
       const CONFIG = {
         name: "Имя", // имя любимого человека
         musicVolume: 0.6, // громкость музыки без видео (0–1)
-        duckedVolume: 0.08, // громкость музыки, пока идёт видео
+        duckedVolume: 0.1, // громкость музыки, пока идёт видео
         fadeMs: 900, // плавность изменения громкости
       };
       /* ==================================== */
@@ -551,47 +551,87 @@
       const eq = document.getElementById("eq");
       const muteBtn = document.getElementById("mute");
       let muted = false,
-        fadeTimer = null,
-        target = CONFIG.musicVolume;
-      music.volume = 0;
+        started = false,
+        ac = null,
+        gain = null,
+        fadeTimer = null;
+
+      // Web Audio: работает и на iPhone, и на Android (music.volume там не работает)
+      function initAudio() {
+        if (ac) return;
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          ac = new AC();
+          gain = ac.createGain();
+          gain.gain.value = 0;
+          ac.createMediaElementSource(music).connect(gain);
+          gain.connect(ac.destination);
+          ac.createMediaElementSource(video).connect(ac.destination);
+        } catch (e) {
+          ac = null;
+          gain = null;
+          music.volume = 0;
+        }
+      }
 
       // Плавное изменение громкости музыки
       function fadeTo(v) {
-        target = v;
-        clearInterval(fadeTimer);
-        const steps = 30,
-          start = music.volume,
-          delta = (v - start) / steps;
-        let i = 0;
-        fadeTimer = setInterval(() => {
-          i++;
-          music.volume = Math.min(1, Math.max(0, start + delta * i));
-          if (i >= steps) {
-            music.volume = v;
-            clearInterval(fadeTimer);
-          }
-        }, CONFIG.fadeMs / steps);
+        if (gain) {
+          const t = ac.currentTime;
+          gain.gain.cancelScheduledValues(t);
+          gain.gain.setValueAtTime(gain.gain.value, t);
+          gain.gain.linearRampToValueAtTime(v, t + CONFIG.fadeMs / 1000);
+        } else {
+          clearInterval(fadeTimer);
+          const steps = 30,
+            start = music.volume,
+            d = (v - start) / steps;
+          let i = 0;
+          fadeTimer = setInterval(() => {
+            i++;
+            music.volume = Math.min(1, Math.max(0, start + d * i));
+            if (i >= steps) clearInterval(fadeTimer);
+          }, CONFIG.fadeMs / steps);
+        }
       }
+      const keepPlaying = () => {
+        if (ac && ac.state !== "running") ac.resume();
+        if (started && !muted && music.paused) music.play().catch(() => {});
+      };
 
       // Открытие открытки — запускаем музыку
       document.getElementById("open").addEventListener("click", () => {
         document.getElementById("gate").classList.add("open");
         document.body.classList.add("entered");
+        initAudio();
+        if (ac) ac.resume();
         music
           .play()
-          .then(() => fadeTo(CONFIG.musicVolume))
+          .then(() => {
+            started = true;
+            fadeTo(CONFIG.musicVolume);
+          })
           .catch(() => {});
       });
 
       // Музыка тише при просмотре видео, громче — после
       video.addEventListener("play", () => {
         if (!muted) fadeTo(CONFIG.duckedVolume);
+        keepPlaying();
+        setTimeout(keepPlaying, 300);
       });
       video.addEventListener("pause", () => {
         if (!muted) fadeTo(CONFIG.musicVolume);
       });
       video.addEventListener("ended", () => {
         if (!muted) fadeTo(CONFIG.musicVolume);
+      });
+      // Если телефон сам остановил музыку — запускаем снова
+      music.addEventListener("pause", () => {
+        if (!document.hidden) setTimeout(keepPlaying, 100);
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) keepPlaying();
       });
 
       // Кнопка вкл/выкл музыки
@@ -601,7 +641,7 @@
         muteBtn.style.opacity = muted ? 0.5 : 1;
         if (muted) fadeTo(0);
         else {
-          music.play();
+          keepPlaying();
           fadeTo(
             video.paused || video.ended
               ? CONFIG.musicVolume
@@ -711,7 +751,8 @@
           p.heart = true;
           parts.push(p);
         }
-        document.getElementById("answer").textContent = "Я знал. Люблю тебя ♥";
+        document.getElementById("answer").textContent =
+          "Я знал(а). Люблю тебя ♥";
       });
     </script>
   </body>
